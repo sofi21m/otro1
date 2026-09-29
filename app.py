@@ -10,23 +10,19 @@ from gtts import gTTS
 from googletrans import Translator
 import streamlit as st
 
-# --- CONFIGURACIÓN DE LA PÁGINA ---
+# --- CONFIGURACIÓN Y ESTILOS ---
 st.set_page_config(
-    page_title="OCR & Traductor de Voz",
-    page_icon="📷",
+    page_title="Studio OCR & Voice",
+    page_icon="⚡",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
 
-# Si Tesseract no está en el PATH del sistema (por ejemplo, en Windows), especifica su ruta aquí:
-# pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-
-# Creación de carpetas necesarias
+# Crear directorio temporal si no existe
 os.makedirs("temp", exist_ok=True)
 
-# --- FUNCIONES DE APOYO ---
-def cleanup_temp_files(days=7):
-    """Elimina archivos de audio antiguos."""
+# Limpieza de archivos temporales
+def cleanup_temp_files(days=1):
     mp3_files = glob.glob("temp/*.mp3")
     now = time.time()
     threshold = days * 86400
@@ -34,161 +30,171 @@ def cleanup_temp_files(days=7):
         if os.stat(f).st_mtime < now - threshold:
             try:
                 os.remove(f)
-            except Exception as e:
+            except Exception:
                 pass
 
-cleanup_temp_files(7)
+cleanup_temp_files(1)
 
-def extract_text_from_image(image_np):
-    """Extrae texto de una imagen en formato NumPy array."""
-    img_rgb = cv2.cvtColor(image_np, cv2.COLOR_BGR2RGB)
-    text = pytesseract.image_to_string(img_rgb)
-    return text.strip()
+# Inicializar sesión para persisencia de texto
+if "ocr_text" not in st.session_state:
+    st.session_state["ocr_text"] = ""
+if "translated_text" not in st.session_state:
+    st.session_state["translated_text"] = ""
+if "audio_path" not in st.session_state:
+    st.session_state["audio_path"] = None
 
-def generate_audio(text, src_lang, dest_lang, tld):
-    """Traduce el texto y genera un archivo MP3."""
-    translator = Translator()
-    translation = translator.translate(text, src=src_lang, dest=dest_lang)
-    trans_text = translation.text
-    
-    # Nombre de archivo único usando UUID para evitar problemas con caracteres especiales
-    unique_id = uuid.uuid4().hex[:8]
-    filename = f"audio_{unique_id}.mp3"
-    filepath = os.path.join("temp", filename)
-    
-    tts = gTTS(text=trans_text, lang=dest_lang, tld=tld, slow=False)
-    tts.save(filepath)
-    
-    return filepath, trans_text
+# Mapeo de Idiomas
+LANGUAGES = {
+    "Español 🇪🇸": "es",
+    "Inglés 🇺🇸": "en",
+    "Japonés 🇯🇵": "ja",
+    "Coreano 🇰🇷": "ko",
+    "Mandarín 🇨🇳": "zh-cn",
+    "Bengalí 🇧🇩": "bn"
+}
 
-# Inicializar estado de sesión
-if "extracted_text" not in st.session_state:
-    st.session_state["extracted_text"] = ""
+ACCENTS = {
+    "Predeterminado": "com",
+    "Estados Unidos": "com",
+    "Reino Unido": "co.uk",
+    "India": "co.in",
+    "Canadá": "ca",
+    "Australia": "com.au"
+}
 
-# --- BARRA LATERAL (CONFIGURACIÓN) ---
+# --- BARRA LATERAL (OPCIONES TÉCNICAS) ---
 with st.sidebar:
-    st.header("⚙️ Configuración")
+    st.title("⚙️ Ajustes de Procesamiento")
+    apply_filter = st.checkbox("Aplicar filtro de inversión (Negativo)")
+    accent_choice = st.selectbox("Acento de Voz (Inglés)", list(ACCENTS.keys()))
+    tld = ACCENTS[accent_choice]
     
-    st.subheader("1. Procesamiento de Imagen")
-    filtro_cam = st.radio(
-        "Filtro para foto de Cámara",
-        ("Sin Filtro", "Invertir Colores (Negativo)"),
-        help="Aplica un filtro simple si la iluminación o contraste dificultan la lectura."
-    )
+    st.divider()
+    if st.button("🗑️ Limpiar Todo", use_container_width=True):
+        st.session_state["ocr_text"] = ""
+        st.session_state["translated_text"] = ""
+        st.session_state["audio_path"] = None
+        st.rerun()
 
-    st.markdown("---")
-    st.subheader("2. Idiomas y Voz")
-    
-    lang_map = {
-        "Español": "es",
-        "Inglés": "en",
-        "Bengalí": "bn",
-        "Coreano": "ko",
-        "Mandarín": "zh-cn",
-        "Japonés": "ja"
-    }
-    
-    in_lang_label = st.selectbox("Idioma de origen (OCR/Texto)", list(lang_map.keys()), index=0)
-    input_language = lang_map[in_lang_label]
+# --- HEADER PRINCIPAL ---
+st.title("⚡ OCR & Reader Studio")
+st.caption("Transforma imágenes en texto escaneado, tradúcelo y escúchalo al instante.")
+st.divider()
 
-    out_lang_label = st.selectbox("Idioma de destino (Traducción)", list(lang_map.keys()), index=1)
-    output_language = lang_map[out_lang_label]
+# --- PASO 1 Y 2: ENTRADA Y RECONOCIMIENTO (GRID DE 2 COLUMNAS) ---
+col_left, col_right = st.columns([1, 1], gap="medium")
 
-    accents = {
-        "Predeterminado": "com",
-        "Estados Unidos": "com",
-        "Reino Unido": "co.uk",
-        "India": "co.in",
-        "Canadá": "ca",
-        "Australia": "com.au",
-        "Irlanda": "ie",
-        "Sudáfrica": "co.za"
-    }
-    english_accent = st.selectbox("Acento de Voz", list(accents.keys()))
-    tld = accents[english_accent]
-
-# --- CUERPO PRINCIPAL ---
-st.title("🔍 OCR & Reader de Texto a Voz")
-st.caption("Extrae texto de tus imágenes o cámara, tradúcelo y escúchalo en tiempo real.")
-
-tab1, tab2 = st.tabs(["📷 Capturar / Cargar Imagen", "🔊 Traducción y Audio"])
-
-with tab1:
-    col1, col2 = st.columns([1, 1], gap="large")
-    
-    with col1:
-        st.subheader("Entrada de Imagen")
-        use_camera = st.toggle("Usar cámara web", value=False)
+with col_left:
+    with st.container(border=True):
+        st.subheader("1. Captura de Imagen")
+        
+        # Selector de modo de entrada
+        source_mode = st.radio(
+            "Selecciona la fuente de la imagen:",
+            ["📁 Cargar Archivo", "📷 Usar Cámara Web"],
+            horizontal=True,
+            label_visibility="collapsed"
+        )
         
         img_np = None
         
-        if use_camera:
-            img_buffer = st.camera_input("Toma una fotografía")
-            if img_buffer is not None:
-                bytes_data = img_buffer.getvalue()
-                img_np = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
-                if filtro_cam == "Invertir Colores (Negativo)":
-                    img_np = cv2.bitwise_not(img_np)
-        else:
-            uploaded_file = st.file_uploader("Selecciona una imagen (PNG, JPG, JPEG)", type=["png", "jpg", "jpeg"])
-            if uploaded_file is not None:
-                file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+        if "Cargar Archivo" in source_mode:
+            uploaded = st.file_uploader("Arrastra tu imagen o explora", type=["png", "jpg", "jpeg"])
+            if uploaded:
+                file_bytes = np.asarray(bytearray(uploaded.read()), dtype=np.uint8)
                 img_np = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-                st.image(img_np, channels="BGR", caption="Imagen cargada", use_container_width=True)
+                st.image(img_np, channels="BGR", use_container_width=True)
+        else:
+            cam_buffer = st.camera_input("Toma una fotografía")
+            if cam_buffer:
+                bytes_data = cam_buffer.getvalue()
+                img_np = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
+                if apply_filter:
+                    img_np = cv2.bitwise_not(img_np)
 
+        # Botón de extracción
         if img_np is not None:
-            if st.button("🚀 Extraer Texto de la Imagen", type="primary"):
-                with st.spinner("Procesando la imagen con OCR..."):
-                    extracted = extract_text_from_image(img_np)
-                    st.session_state["extracted_text"] = extracted
+            if st.button("🔍 Escanear Texto con OCR", type="primary", use_container_width=True):
+                with st.spinner("Procesando imagen con Tesseract..."):
+                    img_rgb = cv2.cvtColor(img_np, cv2.COLOR_BGR2RGB)
+                    extracted = pytesseract.image_to_string(img_rgb).strip()
+                    st.session_state["ocr_text"] = extracted
                     if extracted:
-                        st.success("¡Texto extraído correctamente!")
+                        st.toast("¡Texto detectado exitosamente!", icon="✅")
                     else:
-                        st.warning("No se detectó texto legible en la imagen.")
+                        st.toast("No se detectó texto legíble", icon="⚠️")
 
-    with col2:
-        st.subheader("Texto Detectado")
-        text_area_content = st.text_area(
-            "Puedes editar el texto extraído antes de traducirlo:",
-            value=st.session_state["extracted_text"],
-            height=280
+with col_right:
+    with st.container(border=True):
+        st.subheader("2. Texto Detectado / Editor")
+        
+        # Muestra la cantidad de palabras detectadas si hay texto
+        words_count = len(st.session_state["ocr_text"].split()) if st.session_state["ocr_text"] else 0
+        st.metric(label="Palabras extraídas", value=words_count)
+        
+        # Editor interactivo
+        edited_text = st.text_area(
+            "Texto escaneado (puedes corregirlo manualmente si es necesario):",
+            value=st.session_state["ocr_text"],
+            height=235,
+            placeholder="El texto extraído de la imagen aparecerá aquí..."
         )
-        st.session_state["extracted_text"] = text_area_content
+        st.session_state["ocr_text"] = edited_text
 
-with tab2:
-    st.subheader("Generación de Audio y Traducción")
+# --- PASO 3: TRADUCCIÓN Y AUDIO (PANEL INFERIOR TIPO TARJETA ANCHA) ---
+st.write("")
+with st.container(border=True):
+    st.subheader("3. Traducción y Reproducción de Voz")
     
-    current_text = st.session_state["extracted_text"]
+    c1, c2, c3 = st.columns([1, 1, 1], gap="medium")
     
-    if not current_text.strip():
-        st.info("💡 Primero carga una imagen con texto o escribe algo en el cuadro de texto para comenzar.")
-    else:
-        st.markdown("**Texto a procesar:**")
-        st.info(current_text)
+    with c1:
+        src_lang_label = st.selectbox("Idioma Origen", list(LANGUAGES.keys()), index=0)
+    with c2:
+        dest_lang_label = st.selectbox("Idioma Destino", list(LANGUAGES.keys()), index=1)
+    with c3:
+        st.write(" ") # Espaciador
+        st.write(" ")
+        btn_translate = st.button("🎧 Traducir & Generar Voz", type="primary", use_container_width=True)
+
+    if btn_translate:
+        text_to_process = st.session_state["ocr_text"]
         
-        show_translated_text = st.checkbox("Mostrar texto traducido", value=True)
-        
-        if st.button("🎧 Traducir y Generar Audio", type="primary"):
-            with st.spinner("Traduciendo y generando voz..."):
+        if not text_to_process.strip():
+            st.warning("⚠️️ Primero debes escanear una imagen o escribir algún texto arriba.")
+        else:
+            with st.spinner("Generando traducción y archivo de voz..."):
                 try:
-                    audio_path, translated_text = generate_audio(
-                        current_text, input_language, output_language, tld
-                    )
+                    src_code = LANGUAGES[src_lang_label]
+                    dest_code = LANGUAGES[dest_lang_label]
                     
-                    st.success("¡Audio generado con éxito!")
+                    translator = Translator()
+                    translated = translator.translate(text_to_process, src=src_code, dest=dest_code).text
+                    st.session_state["translated_text"] = translated
                     
-                    if show_translated_text:
-                        st.markdown("### 📝 Texto Traducido:")
-                        st.write(translated_text)
-                        
-                    st.markdown("### 🔊 Reproductor:")
-                    with open(audio_path, "rb") as f:
-                        audio_bytes = f.read()
-                    st.audio(audio_bytes, format="audio/mp3")
+                    # Generar audio
+                    audio_filename = f"audio_{uuid.uuid4().hex[:8]}.mp3"
+                    audio_filepath = os.path.join("temp", audio_filename)
                     
+                    tts = gTTS(text=translated, lang=dest_code, tld=tld, slow=False)
+                    tts.save(audio_filepath)
+                    st.session_state["audio_path"] = audio_filepath
+                    
+                    st.toast("¡Audio listo!", icon="🎉")
                 except Exception as e:
-                    st.error(f"Ocurrió un error al procesar el audio/traducción: {e}")
+                    st.error(f"Error durante el procesamiento: {e}")
 
- 
-    
-    
+    # Resultados si ya se procesó
+    if st.session_state["translated_text"] or st.session_state["audio_path"]:
+        st.divider()
+        res_col1, res_col2 = st.columns([1, 1], gap="medium")
+        
+        with res_col1:
+            st.markdown("**Traducción Resultante:**")
+            st.info(st.session_state["translated_text"])
+            
+        with res_col2:
+            st.markdown("**Reproductor de Audio:**")
+            if st.session_state["audio_path"] and os.path.exists(st.session_state["audio_path"]):
+                with open(st.session_state["audio_path"], "rb") as f:
+                    st.audio(f.read(), format="audio/mp3")
